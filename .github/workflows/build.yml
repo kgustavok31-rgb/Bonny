@@ -1,4 +1,3 @@
-
 name: Gerar APK do Bonny
 
 on:
@@ -21,6 +20,9 @@ jobs:
     name: Compilar APK de debug
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
       - name: Baixar código do repositório
@@ -33,11 +35,25 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: Configurar Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Instalar plataforma Android necessária
-        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+      # Não usar android-actions/setup-android aqui: a versão anterior tentou
+      # instalar o pacote obsoleto "tools" e encerrou com exit code 1.
+      - name: Instalar componentes do Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "${ANDROID_HOME}/cmdline-tools" -type f -name sdkmanager 2>/dev/null | sort | tail -n 1)"
+          fi
+          if [ -z "${SDKMANAGER:-}" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "::error::Não foi encontrado o sdkmanager no runner do GitHub."
+            exit 1
+          fi
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
 
       - name: Configurar Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -64,6 +80,5 @@ jobs:
             echo 'Abra a seção **Artifacts** desta execução e baixe **Bonny-debug-apk**.'
             echo 'Extraia o ZIP baixado para encontrar o APK.'
             echo
-            echo '> Este é um APK de debug para testes. Ele não é assinado para publicação na Play Store.'
+            echo '> Este é um APK de debug para testes. Não é uma versão assinada para publicação na Play Store.'
           } >> "$GITHUB_STEP_SUMMARY"
-
