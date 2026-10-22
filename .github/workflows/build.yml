@@ -1,22 +1,69 @@
-name: Build APK
+
+name: Gerar APK do Bonny
+
 on:
   push:
+    branches:
+      - main
+      - master
+  pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bonny-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  build-apk:
+    name: Compilar APK de debug
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Baixar código do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
-      - uses: gradle/actions/setup-gradle@v4
+          java-version: '17'
+          cache: gradle
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar plataforma Android necessária
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: 8.7
+          gradle-version: '8.7'
+
       - name: Compilar APK
-        run: gradle assembleDebug --stacktrace
-      - uses: actions/upload-artifact@v4
+        run: gradle --no-daemon --stacktrace assembleDebug
+
+      - name: Disponibilizar APK para download
+        uses: actions/upload-artifact@v4
         with:
-          name: LarkPlayer-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: Bonny-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Mostrar instruções de download
+        if: success()
+        run: |
+          {
+            echo '## APK do Bonny gerado com sucesso'
+            echo
+            echo 'Abra a seção **Artifacts** desta execução e baixe **Bonny-debug-apk**.'
+            echo 'Extraia o ZIP baixado para encontrar o APK.'
+            echo
+            echo '> Este é um APK de debug para testes. Ele não é assinado para publicação na Play Store.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
