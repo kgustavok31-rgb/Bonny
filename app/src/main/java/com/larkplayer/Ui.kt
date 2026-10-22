@@ -9,11 +9,17 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -25,6 +31,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -33,7 +41,9 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.Player
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 private val AUDIO_PERM =
     if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO
@@ -41,16 +51,25 @@ private val AUDIO_PERM =
 
 private fun fmt(ms: Long): String { val s = ms / 1000; return "%d:%02d".format(s / 60, s % 60) }
 
+class Detail(val title: String, val subtitle: String, val songs: List<Song>)
+
 @Composable
-fun Art(song: Song?, size: Dp, radius: Dp = 12.dp) {
-    val h = ((song?.title?.hashCode() ?: 0) and 0x7fffffff) % 360
+fun Art(song: Song?, size: Dp? = null, radius: Dp = 12.dp, circle: Boolean = false) {
+    val ctx = LocalContext.current
+    val k = song?.let { ArtLoader.key(it) }
+    var bmp by remember(k) { mutableStateOf(song?.let { ArtLoader.cached(it) }) }
+    LaunchedEffect(k) {
+        if (song != null && bmp == null) bmp = withContext(Dispatchers.IO) { ArtLoader.load(ctx, song) }
+    }
+    val h = ((song?.album?.hashCode() ?: 0) and 0x7fffffff) % 360
     val c1 = Color.hsv(h.toFloat(), 0.55f, 0.85f)
     val c2 = Color.hsv(((h + 50) % 360).toFloat(), 0.65f, 0.55f)
-    Box(
-        Modifier.size(size).clip(RoundedCornerShape(radius)).background(Brush.linearGradient(listOf(c1, c2))),
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(Icons.Rounded.MusicNote, null, tint = Color.White.copy(alpha = 0.85f), modifier = Modifier.size(size * 0.5f))
+    val base = if (size != null) Modifier.size(size) else Modifier.fillMaxWidth().aspectRatio(1f)
+    val shape = if (circle) CircleShape else RoundedCornerShape(radius)
+    val b = bmp
+    Box(base.clip(shape).background(Brush.linearGradient(listOf(c1, c2))), contentAlignment = Alignment.Center) {
+        if (b != null) Image(b.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        else Icon(Icons.Rounded.MusicNote, null, tint = Color.White.copy(alpha = 0.85f), modifier = Modifier.size((size ?: 80.dp) * 0.5f))
     }
 }
 
@@ -75,7 +94,10 @@ fun App(vm: PlayerViewModel = viewModel()) {
     var tab by remember { mutableIntStateOf(0) }
     var query by remember { mutableStateOf("") }
     var full by remember { mutableStateOf(false) }
+    var detail by remember { mutableStateOf<Detail?>(null) }
+    BackHandler(detail != null) { detail = null }
     BackHandler(full) { full = false }
+    val tabs = listOf("Início", "Músicas", "Álbuns", "Artistas", "Playlists")
 
     Box(Modifier.fillMaxSize()) {
         Scaffold(
@@ -87,27 +109,122 @@ fun App(vm: PlayerViewModel = viewModel()) {
                     "Lark Player", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
                 )
-                Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(tab == 0, { tab = 0 }, { Text("Músicas") })
-                    FilterChip(tab == 1, { tab = 1 }, { Text("Playlists") })
+                Row(
+                    Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    tabs.forEachIndexed { i, t -> FilterChip(tab == i, { tab = i; detail = null }, { Text(t) }) }
                 }
                 Spacer(Modifier.height(8.dp))
-                if (!granted) {
-                    Text("Permita o acesso às músicas para continuar.", Modifier.padding(20.dp))
-                } else if (tab == 0) {
-                    OutlinedTextField(
-                        query, { query = it }, singleLine = true,
-                        placeholder = { Text("Buscar música ou artista") },
-                        leadingIcon = { Icon(Icons.Rounded.Search, null) },
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
-                    )
-                    SongList(vm, query)
-                } else PlaylistList(vm)
+                val d = detail
+                when {
+                    !granted -> Text("Permita o acesso às músicas para continuar.", Modifier.padding(20.dp))
+                    d != null -> DetailScreen(vm, d) { detail = null }
+                    tab == 0 -> Home(vm)
+                    tab == 1 -> {
+                        OutlinedTextField(
+                            query, { query = it }, singleLine = true,
+                            placeholder = { Text("Buscar música ou artista") },
+                            leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+                        )
+                        SongList(vm, query)
+                    }
+                    tab == 2 -> AlbumGrid(vm) { detail = it }
+                    tab == 3 -> ArtistList(vm) { detail = it }
+                    else -> PlaylistList(vm)
+                }
             }
         }
         AnimatedVisibility(full, enter = slideInVertically { it }, exit = slideOutVertically { it }) {
             FullPlayer(vm) { full = false }
+        }
+    }
+}
+
+@Composable
+fun Home(vm: PlayerViewModel) {
+    val recents = vm.recents.mapNotNull { id -> vm.songs.find { it.id == id } }
+    val favs = vm.songs.filter { it.id in vm.favorites }
+    LazyColumn(contentPadding = PaddingValues(bottom = 8.dp)) {
+        item {
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button({ if (vm.songs.isNotEmpty()) vm.play(vm.songs, 0) }) {
+                    Icon(Icons.Rounded.PlayArrow, null); Spacer(Modifier.width(4.dp)); Text("Tocar tudo")
+                }
+                FilledTonalButton({ if (vm.songs.isNotEmpty()) vm.play(vm.songs.shuffled(), 0) }) {
+                    Icon(Icons.Rounded.Shuffle, null); Spacer(Modifier.width(4.dp)); Text("Aleatório")
+                }
+            }
+        }
+        item { Section("Tocadas recentemente", recents, vm, "Toque uma música e ela aparece aqui.") }
+        item { Section("Favoritas", favs, vm, "Use o ⋮ ou o coração no player para favoritar.") }
+    }
+}
+
+@Composable
+fun Section(title: String, list: List<Song>, vm: PlayerViewModel, empty: String) {
+    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(start = 20.dp, top = 18.dp, bottom = 8.dp))
+    if (list.isEmpty()) {
+        Text(empty, Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodySmall)
+        return
+    }
+    LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        items(list.size) { i ->
+            val s = list[i]
+            Column(Modifier.width(132.dp).clickable { vm.play(list, i) }) {
+                Art(s, 132.dp, 18.dp)
+                Spacer(Modifier.height(6.dp))
+                Text(s.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                Text(s.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+fun SongRow(vm: PlayerViewModel, s: Song, list: List<Song>, i: Int) {
+    var menu by remember { mutableStateOf(false) }
+    val playing = vm.currentId == s.id.toString()
+    val fav = s.id in vm.favorites
+    Row(
+        Modifier.fillMaxWidth().clickable { vm.play(list, i) }.padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Art(s, 52.dp)
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                s.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold,
+                color = if (playing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                "${s.artist} · ${fmt(s.durationMs)}", maxLines = 1, overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (fav) Icon(Icons.Rounded.Favorite, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+        Box {
+            IconButton({ menu = true }) { Icon(Icons.Rounded.MoreVert, "Mais opções") }
+            DropdownMenu(menu, { menu = false }) {
+                DropdownMenuItem(
+                    { Text(if (fav) "Remover dos favoritos" else "Favoritar") },
+                    { vm.toggleFavorite(s.id); menu = false },
+                    leadingIcon = { Icon(if (fav) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, null) }
+                )
+                if (vm.playlists.isEmpty()) DropdownMenuItem({ Text("Crie uma playlist para adicionar") }, { menu = false })
+                vm.playlists.forEach { p ->
+                    DropdownMenuItem(
+                        { Text("Adicionar a ${p.name}") },
+                        { vm.addToPlaylist(p.name, s.id); menu = false },
+                        leadingIcon = { Icon(Icons.Rounded.PlaylistAdd, null) }
+                    )
+                }
+            }
         }
     }
 }
@@ -120,40 +237,81 @@ fun SongList(vm: PlayerViewModel, query: String) {
         return
     }
     LazyColumn(contentPadding = PaddingValues(top = 4.dp, bottom = 8.dp)) {
-        items(list.size, key = { list[it].id }) { i ->
-            val s = list[i]
-            var menu by remember { mutableStateOf(false) }
-            val playing = vm.currentId == s.id.toString()
+        items(list.size, key = { list[it].id }) { i -> SongRow(vm, list[i], list, i) }
+    }
+}
+
+@Composable
+fun AlbumGrid(vm: PlayerViewModel, onOpen: (Detail) -> Unit) {
+    val groups = remember(vm.songs) {
+        vm.songs.groupBy { it.album }.map { (k, v) -> Detail(k, v.first().artist, v) }.sortedBy { it.title.lowercase() }
+    }
+    if (groups.isEmpty()) { Text("Nenhum álbum encontrado.", Modifier.padding(20.dp)); return }
+    LazyVerticalGrid(
+        GridCells.Fixed(2), contentPadding = PaddingValues(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(18.dp)
+    ) {
+        items(groups.size) { i ->
+            val g = groups[i]
+            Column(Modifier.clickable { onOpen(g) }) {
+                Art(g.songs.first(), null, 20.dp)
+                Spacer(Modifier.height(6.dp))
+                Text(g.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                Text("${g.subtitle} · ${g.songs.size} músicas", maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+fun ArtistList(vm: PlayerViewModel, onOpen: (Detail) -> Unit) {
+    val groups = remember(vm.songs) {
+        vm.songs.groupBy { it.artist }.map { (k, v) ->
+            Detail(k, "${v.size} músicas · ${v.map { it.album }.distinct().size} álbuns", v)
+        }.sortedBy { it.title.lowercase() }
+    }
+    if (groups.isEmpty()) { Text("Nenhum artista encontrado.", Modifier.padding(20.dp)); return }
+    LazyColumn(contentPadding = PaddingValues(vertical = 4.dp)) {
+        items(groups.size) { i ->
+            val g = groups[i]
             Row(
-                Modifier.fillMaxWidth().clickable { vm.play(list, i) }.padding(horizontal = 16.dp, vertical = 6.dp),
+                Modifier.fillMaxWidth().clickable { onOpen(g) }.padding(horizontal = 16.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Art(s, 52.dp)
+                Art(g.songs.first(), 56.dp, circle = true)
                 Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        s.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold,
-                        color = if (playing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        "${s.artist} · ${fmt(s.durationMs)}", maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Box {
-                    IconButton({ menu = true }) { Icon(Icons.Rounded.MoreVert, "Mais opções") }
-                    DropdownMenu(menu, { menu = false }) {
-                        if (vm.playlists.isEmpty()) DropdownMenuItem({ Text("Crie uma playlist primeiro") }, { menu = false })
-                        vm.playlists.forEach { p ->
-                            DropdownMenuItem(
-                                { Text("Adicionar a ${p.name}") },
-                                { vm.addToPlaylist(p.name, s.id); menu = false },
-                                leadingIcon = { Icon(Icons.Rounded.PlaylistAdd, null) }
-                            )
-                        }
-                    }
+                Column {
+                    Text(g.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                    Text(g.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun DetailScreen(vm: PlayerViewModel, d: Detail, onBack: () -> Unit) {
+    Column {
+        Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onBack) { Icon(Icons.Rounded.ArrowBack, "Voltar") }
+            Text(d.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Art(d.songs.first(), 110.dp, 20.dp)
+            Spacer(Modifier.width(16.dp))
+            Column {
+                Text(d.subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button({ vm.play(d.songs, 0) }) { Icon(Icons.Rounded.PlayArrow, null) }
+                    FilledTonalButton({ vm.play(d.songs.shuffled(), 0) }) { Icon(Icons.Rounded.Shuffle, null) }
+                }
+            }
+        }
+        LazyColumn(contentPadding = PaddingValues(bottom = 8.dp)) {
+            items(d.songs.size) { i -> SongRow(vm, d.songs[i], d.songs, i) }
         }
     }
 }
@@ -235,32 +393,34 @@ fun FullPlayer(vm: PlayerViewModel, onClose: () -> Unit) {
     val song = vm.songs.find { it.id.toString() == vm.currentId }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         if (song == null) return@Surface
+        val fav = song.id in vm.favorites
+        val on = MaterialTheme.colorScheme.primary
+        val off = MaterialTheme.colorScheme.onSurfaceVariant
         Column(Modifier.padding(horizontal = 24.dp, vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClose) { Icon(Icons.Rounded.KeyboardArrowDown, "Fechar", Modifier.size(32.dp)) }
-                Text("Tocando agora", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.width(48.dp))
+                Text("Tocando agora", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, color = off)
+                IconButton({ vm.toggleFavorite(song.id) }) {
+                    Icon(if (fav) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, "Favoritar", tint = if (fav) on else off)
+                }
             }
             Spacer(Modifier.weight(1f))
             Art(song, 300.dp, 28.dp)
             Spacer(Modifier.height(32.dp))
             Text(song.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold,
                 maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text(song.artist, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("${song.artist} · ${song.album}", color = off, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(20.dp))
             Slider(
                 value = if (vm.duration > 0) vm.position.toFloat() / vm.duration else 0f,
                 onValueChange = { vm.seekTo((it * vm.duration).toLong()) }
             )
             Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(fmt(vm.position), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(fmt(vm.duration), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(fmt(vm.position), style = MaterialTheme.typography.bodySmall, color = off)
+                Text(fmt(vm.duration), style = MaterialTheme.typography.bodySmall, color = off)
             }
             Spacer(Modifier.height(12.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                val on = MaterialTheme.colorScheme.primary
-                val off = MaterialTheme.colorScheme.onSurfaceVariant
                 IconButton({ vm.toggleShuffle() }) { Icon(Icons.Rounded.Shuffle, "Aleatório", tint = if (vm.shuffle) on else off) }
                 IconButton({ vm.previous() }, Modifier.size(56.dp)) { Icon(Icons.Rounded.SkipPrevious, "Anterior", Modifier.size(36.dp)) }
                 FilledIconButton({ vm.togglePlay() }, Modifier.size(72.dp)) {

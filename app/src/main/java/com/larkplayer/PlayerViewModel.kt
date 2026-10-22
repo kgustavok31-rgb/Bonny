@@ -16,10 +16,14 @@ import androidx.media3.session.SessionToken
 
 class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private val store = PlaylistStore(app)
+    private val lib = LibraryStore(app)
+    private var lastLogged: String? = null
     private var controller: MediaController? = null
 
     var songs by mutableStateOf(listOf<Song>()); private set
     var playlists by mutableStateOf(store.load()); private set
+    var recents by mutableStateOf(lib.recents()); private set
+    var favorites by mutableStateOf(lib.favorites()); private set
     var currentId by mutableStateOf<String?>(null); private set
     var isPlaying by mutableStateOf(false); private set
     var shuffle by mutableStateOf(false); private set
@@ -46,7 +50,12 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         isPlaying = p.isPlaying
         shuffle = p.shuffleModeEnabled
         repeatMode = p.repeatMode
-        currentId = p.currentMediaItem?.mediaId
+        val id = p.currentMediaItem?.mediaId
+        currentId = id
+        if (id != null && id != lastLogged) {
+            lastLogged = id
+            id.toLongOrNull()?.let { addRecent(it) }
+        }
         refresh()
     }
 
@@ -62,7 +71,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         val c = controller ?: return
         val items = list.map {
             MediaItem.Builder().setMediaId(it.id.toString()).setUri(it.uri)
-                .setMediaMetadata(MediaMetadata.Builder().setTitle(it.title).setArtist(it.artist).build())
+                .setMediaMetadata(MediaMetadata.Builder().setTitle(it.title).setArtist(it.artist).setAlbumTitle(it.album).build())
                 .build()
         }
         c.setMediaItems(items, index, 0L)
@@ -103,6 +112,16 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deletePlaylist(name: String) {
         playlists = playlists.filterNot { it.name == name }; store.save(playlists)
+    }
+
+    private fun addRecent(id: Long) {
+        recents = (listOf(id) + recents.filter { it != id }).take(20)
+        lib.saveRecents(recents)
+    }
+
+    fun toggleFavorite(id: Long) {
+        favorites = if (id in favorites) favorites - id else favorites + id
+        lib.saveFavorites(favorites)
     }
 
     override fun onCleared() { controller?.release() }
